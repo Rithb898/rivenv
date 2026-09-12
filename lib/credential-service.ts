@@ -1,10 +1,12 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   auditEvent,
   collection,
   credential,
   credentialVersion,
+  environment,
+  project,
 } from "@/lib/db/schema";
 import {
   AuthorizationError,
@@ -49,6 +51,41 @@ function metadataForCredential(input: {
   });
 }
 
+function slugify(value: string) {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "untitled"
+  );
+}
+
+async function requireProjectInWorkspace(
+  workspaceId: string,
+  projectId: string,
+) {
+  const [ownedProject] = await db
+    .select({
+      id: project.id,
+      name: project.name,
+    })
+    .from(project)
+    .where(
+      and(
+        eq(project.id, projectId),
+        eq(project.workspaceId, workspaceId),
+      ),
+    )
+    .limit(1);
+
+  if (!ownedProject) {
+    throw new AuthorizationError(403, "Project access denied.");
+  }
+
+  return ownedProject;
+}
+
 async function requireCollectionInWorkspace(
   workspaceId: string,
   collectionId: string,
@@ -72,6 +109,144 @@ async function requireCollectionInWorkspace(
   }
 
   return ownedCollection;
+}
+
+export async function listWorkspaceCollections(workspaceId: string) {
+  await requireWorkspaceMember(workspaceId);
+
+  return db
+    .select({
+      id: collection.id,
+      name: collection.name,
+      type: collection.type,
+      projectId: project.id,
+      projectName: project.name,
+      environmentId: environment.id,
+      environmentName: environment.name,
+    })
+    .from(collection)
+    .leftJoin(project, eq(collection.projectId, project.id))
+    .leftJoin(environment, eq(collection.environmentId, environment.id))
+    .where(eq(collection.workspaceId, workspaceId))
+    .orderBy(asc(project.name), asc(environment.sortOrder), asc(collection.name));
+}
+
+export async function createProject(input: {
+  workspaceId: string;
+  name: string;
+}) {
+  const { session } = await requireWorkspaceMember(input.workspaceId);
+  const name = input.name.trim();
+  const projectId = crypto.randomUUID();
+  const environmentId = crypto.randomUUID();
+  const collectionId = crypto.randomUUID();
+  const environmentName = "Development";
+
+  await db.batch([
+    db.insert(project).values({
+      id: projectId,
+      workspaceId: input.workspaceId,
+      name,
+      slug: `${slugify(name)}-${projectId.slice(0, 8)}`,
+      createdBy: session.user.id,
+    }),
+    db.insert(environment).values({
+      id: environmentId,
+      projectId,
+      name: environmentName,
+      slug: `development-${environmentId.slice(0, 8)}`,
+      isProtected: false,
+      sortOrder: 0,
+    }),
+    db.insert(collection).values({
+      id: collectionId,
+      workspaceId: input.workspaceId,
+      name: `${name} / ${environmentName}`,
+      type: "project_environment",
+      projectId,
+      environmentId,
+      createdBy: session.user.id,
+    }),
+    db.insert(auditEvent).values({
+      id: crypto.randomUUID(),
+      workspaceId: input.workspaceId,
+      actorUserId: session.user.id,
+      action: "project.created",
+      resourceType: "project",
+      resourceId: projectId,
+      metadata: JSON.stringify({ name }),
+    }),
+    db.insert(auditEvent).values({
+      id: crypto.randomUUID(),
+      workspaceId: input.workspaceId,
+      actorUserId: session.user.id,
+      action: "environment.created",
+      resourceType: "environment",
+      resourceId: environmentId,
+      metadata: JSON.stringify({
+        projectId,
+        name: environmentName,
+      }),
+    }),
+  ]);
+
+  return {
+    projectId,
+    environmentId,
+    collectionId,
+  };
+}
+
+export async function createEnvironment(input: {
+  workspaceId: string;
+  projectId: string;
+  name: string;
+}) {
+  const { session } = await requireWorkspaceMember(input.workspaceId);
+  const ownedProject = await requireProjectInWorkspace(
+    input.workspaceId,
+    input.projectId,
+  );
+  const name = input.name.trim();
+  const environmentId = crypto.randomUUID();
+  const collectionId = crypto.randomUUID();
+
+  await db.batch([
+    db.insert(environment).values({
+      id: environmentId,
+      projectId: input.projectId,
+      name,
+      slug: `${slugify(name)}-${environmentId.slice(0, 8)}`,
+      isProtected: name.toLowerCase() === "production",
+      sortOrder: 0,
+    }),
+    db.insert(collection).values({
+      id: collectionId,
+      workspaceId: input.workspaceId,
+      name: `${ownedProject.name} / ${name}`,
+      type: "project_environment",
+      projectId: input.projectId,
+      environmentId,
+      createdBy: session.user.id,
+    }),
+    db.insert(auditEvent).values({
+      id: crypto.randomUUID(),
+      workspaceId: input.workspaceId,
+      actorUserId: session.user.id,
+      action: "environment.created",
+      resourceType: "environment",
+      resourceId: environmentId,
+      metadata: JSON.stringify({
+        projectId: input.projectId,
+        name,
+      }),
+    }),
+  ]);
+
+  return {
+    environmentId,
+    collectionId,
+  };
 }
 
 export async function createCredential(input: CredentialInput) {

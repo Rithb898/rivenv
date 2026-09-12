@@ -1,11 +1,12 @@
-import { and, eq } from "drizzle-orm";
 import Auth from "@/components/Auth";
 import CredentialsDashboard, {
+  type DashboardCollection,
   type DashboardCredential,
 } from "@/components/CredentialsDashboard";
-import { db } from "@/lib/db";
-import { collection } from "@/lib/db/schema";
-import { listCredentials } from "@/lib/credential-service";
+import {
+  listCredentials,
+  listWorkspaceCollections,
+} from "@/lib/credential-service";
 import { ensureDefaultWorkspace } from "@/lib/ensure-workspace";
 import { getSession } from "@/lib/get-session";
 
@@ -17,19 +18,10 @@ const HomePage = async () => {
   }
 
   const defaultWorkspace = await ensureDefaultWorkspace(session.user);
-  const [personalCollection] = await db
-    .select({
-      id: collection.id,
-      name: collection.name,
-    })
-    .from(collection)
-    .where(
-      and(
-        eq(collection.workspaceId, defaultWorkspace.id),
-        eq(collection.name, "Personal"),
-      ),
-    )
-    .limit(1);
+  const collections = await listWorkspaceCollections(defaultWorkspace.id);
+  const personalCollection = collections.find(
+    (item) => item.type === "personal",
+  );
 
   if (!personalCollection) {
     throw new Error("Personal collection is missing.");
@@ -39,6 +31,21 @@ const HomePage = async () => {
     defaultWorkspace.id,
     personalCollection.id,
   );
+
+  const initialCollections: DashboardCollection[] = collections.map((item) => ({
+    id: item.id,
+    value: item.id,
+    name: item.name,
+    label:
+      item.type === "personal"
+        ? "Personal"
+        : `${item.projectName ?? "Project"} / ${item.environmentName ?? item.name}`,
+    type: item.type,
+    projectId: item.projectId,
+    projectName: item.projectName,
+    environmentId: item.environmentId,
+    environmentName: item.environmentName,
+  }));
 
   const initialCredentials: DashboardCredential[] = credentials.map((item) => ({
     ...item,
@@ -50,6 +57,7 @@ const HomePage = async () => {
     <CredentialsDashboard
       workspaceId={defaultWorkspace.id}
       collectionId={personalCollection.id}
+      collections={initialCollections}
       workspaceName={defaultWorkspace.name}
       user={session.user}
       initialCredentials={initialCredentials}

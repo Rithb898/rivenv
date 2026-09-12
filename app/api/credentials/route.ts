@@ -1,5 +1,8 @@
 import { AuthorizationError } from "@/lib/authorization";
-import { createCredential } from "@/lib/credential-service";
+import {
+  createCredential,
+  listCredentials,
+} from "@/lib/credential-service";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -29,6 +32,41 @@ function errorResponse(error: unknown) {
     { error: "Unable to create credential." },
     { status: 500 },
   );
+}
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const workspaceId = url.searchParams.get("workspaceId");
+  const collectionId = url.searchParams.get("collectionId");
+
+  if (!workspaceId || !collectionId) {
+    return Response.json(
+      { error: "workspaceId and collectionId are required." },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const credentials = await listCredentials(workspaceId, collectionId);
+
+    return Response.json(credentials, {
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (error) {
+    if (error instanceof AuthorizationError) {
+      return Response.json(
+        { error: error.message },
+        { status: error.status },
+      );
+    }
+
+    return Response.json(
+      { error: "Unable to list credentials." },
+      { status: 500 },
+    );
+  }
 }
 
 export async function POST(request: Request) {

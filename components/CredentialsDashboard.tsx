@@ -46,6 +46,18 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { authClient } from "@/lib/auth-client";
 
+export type DashboardCollection = {
+  id: string;
+  value: string;
+  name: string;
+  label: string;
+  type: string;
+  projectId: string | null;
+  projectName: string | null;
+  environmentId: string | null;
+  environmentName: string | null;
+};
+
 export type DashboardCredential = {
   id: string;
   collectionId: string;
@@ -61,6 +73,7 @@ export type DashboardCredential = {
 type CredentialsDashboardProps = {
   workspaceId: string;
   collectionId: string;
+  collections: DashboardCollection[];
   workspaceName: string;
   user: {
     name: string;
@@ -127,23 +140,92 @@ function maskedValue(value?: string) {
 export default function CredentialsDashboard({
   workspaceId,
   collectionId,
+  collections,
   workspaceName,
   user,
   initialCredentials,
 }: CredentialsDashboardProps) {
   const router = useRouter();
   const [credentials, setCredentials] = useState(initialCredentials);
+  const [selectedCollectionId, setSelectedCollectionId] = useState(collectionId);
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [environmentOpen, setEnvironmentOpen] = useState(false);
   const [rotateTarget, setRotateTarget] = useState<DashboardCredential | null>(null);
   const [form, setForm] = useState<CredentialForm>(EMPTY_FORM);
-  const [busy, setBusy] = useState<"create" | "rotate" | "reveal" | "signout" | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [environmentName, setEnvironmentName] = useState("");
+  const [busy, setBusy] = useState<
+    "create" | "rotate" | "reveal" | "project" | "environment" | "load" | "signout" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
 
+  const selectedCollection =
+    collections.find((item) => item.id === selectedCollectionId) ??
+    collections[0];
+  const selectedProjectId = selectedCollection?.projectId ?? null;
+
   useEffect(() => {
-    setCredentials(initialCredentials);
-  }, [initialCredentials]);
+    if (!collections.some((item) => item.id === selectedCollectionId)) {
+      setSelectedCollectionId(collectionId);
+    }
+  }, [collectionId, collections, selectedCollectionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (selectedCollectionId === collectionId) {
+      setCredentials(initialCredentials);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setBusy("load");
+    setError(null);
+
+    const params = new URLSearchParams({
+      workspaceId,
+      collectionId: selectedCollectionId,
+    });
+
+    fetch(`/api/credentials?${params}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = (await response.json()) as
+          | DashboardCredential[]
+          | { error?: string };
+
+        if (!response.ok || !Array.isArray(payload)) {
+          throw new Error(
+            !Array.isArray(payload) && payload.error
+              ? payload.error
+              : "Unable to load credentials.",
+          );
+        }
+
+        if (!cancelled) {
+          setCredentials(payload);
+        }
+      })
+      .catch((requestError) => {
+        if (!cancelled) {
+          setError(
+            requestError instanceof Error
+              ? requestError.message
+              : "Unable to load credentials.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [collectionId, initialCredentials, selectedCollectionId, workspaceId]);
 
   const initials = useMemo(
     () =>
@@ -180,7 +262,7 @@ export default function CredentialsDashboard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           workspaceId,
-          collectionId,
+          collectionId: selectedCollectionId,
           name: form.name,
           type: form.type,
           provider: form.provider || null,
@@ -203,6 +285,91 @@ export default function CredentialsDashboard({
         requestError instanceof Error
           ? requestError.message
           : "Unable to create credential.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleCreateProject = async () => {
+    if (!projectName.trim()) {
+      setError("Give the project a name.");
+      return;
+    }
+
+    setBusy("project");
+    setError(null);
+
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          name: projectName,
+        }),
+      });
+      const payload = (await response.json()) as {
+        collectionId?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.collectionId) {
+        throw new Error(payload.error ?? "Unable to create project.");
+      }
+
+      setProjectOpen(false);
+      setProjectName("");
+      setSelectedCollectionId(payload.collectionId);
+      router.refresh();
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to create project.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleCreateEnvironment = async () => {
+    if (!selectedProjectId || !environmentName.trim()) {
+      setError("Choose a project and give the environment a name.");
+      return;
+    }
+
+    setBusy("environment");
+    setError(null);
+
+    try {
+      const response = await fetch("/api/environments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          projectId: selectedProjectId,
+          name: environmentName,
+        }),
+      });
+      const payload = (await response.json()) as {
+        collectionId?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.collectionId) {
+        throw new Error(payload.error ?? "Unable to create environment.");
+      }
+
+      setEnvironmentOpen(false);
+      setEnvironmentName("");
+      setSelectedCollectionId(payload.collectionId);
+      router.refresh();
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to create environment.",
       );
     } finally {
       setBusy(null);
@@ -347,7 +514,7 @@ export default function CredentialsDashboard({
               <ShieldCheckIcon className="size-3.5 text-emerald-500" />
               <span>Encrypted credentials</span>
               <span className="text-border">/</span>
-              <span>Personal collection</span>
+              <span>{selectedCollection?.label ?? "Personal"}</span>
             </div>
             <h1 className="font-heading text-3xl tracking-[-0.04em] sm:text-4xl">
               API keys & environment variables
@@ -357,8 +524,134 @@ export default function CredentialsDashboard({
             </p>
           </div>
 
-          <Dialog
-            open={createOpen}
+          <div className="flex w-full flex-col items-stretch gap-3 sm:w-96 sm:items-end">
+            <div className="w-full">
+              <span className="mb-1.5 block text-muted-foreground text-[11px]">Collection</span>
+              <Select
+                items={collections}
+                value={selectedCollection}
+                onValueChange={(value) => {
+                  if (value) {
+                    setSelectedCollectionId(value.id);
+                    setError(null);
+                  }
+                }}
+              >
+                <SelectTrigger aria-label="Credential collection">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectPopup>
+                  {collections.map((item) => (
+                    <SelectItem key={item.id} value={item}>
+                      <span className="flex min-w-0 flex-col text-left">
+                        <span className="truncate">{item.label}</span>
+                        {item.type !== "personal" ? (
+                          <span className="truncate text-muted-foreground text-xs">
+                            {item.environmentName}
+                          </span>
+                        ) : null}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <Dialog
+                open={projectOpen}
+                onOpenChange={(open) => {
+                  setProjectOpen(open);
+                  if (!open) {
+                    setProjectName("");
+                    setError(null);
+                  }
+                }}
+              >
+                <DialogTrigger
+                  render={
+                    <Button size="sm" variant="outline">
+                      <PlusIcon />
+                      New project
+                    </Button>
+                  }
+                />
+                <DialogPopup>
+                  <DialogHeader>
+                    <DialogTitle>New project</DialogTitle>
+                    <DialogDescription>
+                      A Development environment and collection will be created automatically.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogPanel className="flex flex-col gap-4">
+                    <Field>
+                      <FieldLabel htmlFor="project-name">Project name</FieldLabel>
+                      <Input
+                        id="project-name"
+                        nativeInput
+                        placeholder="Web app"
+                        value={projectName}
+                        onChange={(event) => setProjectName(event.target.value)}
+                      />
+                    </Field>
+                    {error ? <p className="text-destructive text-sm">{error}</p> : null}
+                  </DialogPanel>
+                  <DialogFooter>
+                    <Button variant="ghost" onClick={() => setProjectOpen(false)}>Cancel</Button>
+                    <Button loading={busy === "project"} onClick={handleCreateProject}>Create project</Button>
+                  </DialogFooter>
+                </DialogPopup>
+              </Dialog>
+
+              {selectedProjectId ? (
+                <Dialog
+                  open={environmentOpen}
+                  onOpenChange={(open) => {
+                    setEnvironmentOpen(open);
+                    if (!open) {
+                      setEnvironmentName("");
+                      setError(null);
+                    }
+                  }}
+                >
+                  <DialogTrigger
+                    render={
+                      <Button size="sm" variant="outline">
+                        <PlusIcon />
+                        New environment
+                      </Button>
+                    }
+                  />
+                  <DialogPopup>
+                    <DialogHeader>
+                      <DialogTitle>New environment</DialogTitle>
+                      <DialogDescription>
+                        Add another deployment context to {selectedCollection?.projectName}.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <DialogPanel className="flex flex-col gap-4">
+                      <Field>
+                        <FieldLabel htmlFor="environment-name">Environment name</FieldLabel>
+                        <Input
+                          id="environment-name"
+                          nativeInput
+                          placeholder="Staging"
+                          value={environmentName}
+                          onChange={(event) => setEnvironmentName(event.target.value)}
+                        />
+                      </Field>
+                      {error ? <p className="text-destructive text-sm">{error}</p> : null}
+                    </DialogPanel>
+                    <DialogFooter>
+                      <Button variant="ghost" onClick={() => setEnvironmentOpen(false)}>Cancel</Button>
+                      <Button loading={busy === "environment"} onClick={handleCreateEnvironment}>Create environment</Button>
+                    </DialogFooter>
+                  </DialogPopup>
+                </Dialog>
+              ) : null}
+
+              <Dialog
+                open={createOpen}
             onOpenChange={(open) => {
               setCreateOpen(open);
               if (!open) resetForm();
@@ -455,7 +748,9 @@ export default function CredentialsDashboard({
                 <Button loading={busy === "create"} onClick={handleCreate}>Save credential</Button>
               </DialogFooter>
             </DialogPopup>
-          </Dialog>
+              </Dialog>
+            </div>
+          </div>
         </section>
 
         <div className="mb-6 flex items-start gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-amber-700 dark:text-amber-300">
@@ -471,7 +766,9 @@ export default function CredentialsDashboard({
         <section className="overflow-hidden rounded-xl border bg-card shadow-xs/5">
           <div className="flex items-center justify-between border-b px-4 py-3 sm:px-5">
             <div>
-              <h2 className="font-medium text-sm">Personal credentials</h2>
+              <h2 className="font-medium text-sm">
+                {selectedCollection?.label ?? "Credentials"}
+              </h2>
               <p className="mt-0.5 text-muted-foreground text-xs">
                 {credentials.length === 0 ? "Nothing stored yet" : `${credentials.length} stored ${credentials.length === 1 ? "credential" : "credentials"}`}
               </p>
@@ -486,7 +783,7 @@ export default function CredentialsDashboard({
               <div className="mb-4 flex size-11 items-center justify-center rounded-full border bg-muted/40 text-muted-foreground">
                 <KeyRoundIcon className="size-5" />
               </div>
-              <h3 className="font-medium text-sm">Your collection is empty</h3>
+              <h3 className="font-medium text-sm">This collection is empty</h3>
               <p className="mt-1 max-w-xs text-muted-foreground text-xs leading-5">
                 Add an API key or environment variable and it will appear here, masked until you ask to reveal it.
               </p>
