@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   auditEvent,
@@ -10,7 +10,10 @@ import {
   AuthorizationError,
   requireWorkspaceMember,
 } from "@/lib/authorization";
-import { encryptCredential } from "@/lib/credential-crypto";
+import {
+  decryptCredential,
+  encryptCredential,
+} from "@/lib/credential-crypto";
 
 type CredentialInput = {
   workspaceId: string;
@@ -131,6 +134,95 @@ export async function createCredential(input: CredentialInput) {
     provider,
     exportName,
     currentVersionId: versionId,
+  };
+}
+
+export async function listCredentials(
+  workspaceId: string,
+  collectionId: string,
+) {
+  await requireWorkspaceMember(workspaceId);
+  await requireCollectionInWorkspace(workspaceId, collectionId);
+
+  return db
+    .select({
+      id: credential.id,
+      collectionId: credential.collectionId,
+      name: credential.name,
+      type: credential.type,
+      provider: credential.provider,
+      exportName: credential.exportName,
+      currentVersionId: credential.currentVersionId,
+      createdAt: credential.createdAt,
+      updatedAt: credential.updatedAt,
+    })
+    .from(credential)
+    .where(eq(credential.collectionId, collectionId))
+    .orderBy(desc(credential.createdAt));
+}
+
+export async function revealCredential(input: {
+  workspaceId: string;
+  credentialId: string;
+}) {
+  const { session } = await requireWorkspaceMember(input.workspaceId);
+
+  const [storedCredential] = await db
+    .select({
+      id: credential.id,
+      name: credential.name,
+      type: credential.type,
+      provider: credential.provider,
+      exportName: credential.exportName,
+      environmentId: collection.environmentId,
+      encryptedValue: credentialVersion.encryptedValue,
+      nonce: credentialVersion.nonce,
+      encryptionKeyVersion: credentialVersion.encryptionKeyVersion,
+    })
+    .from(credential)
+    .innerJoin(collection, eq(credential.collectionId, collection.id))
+    .innerJoin(
+      credentialVersion,
+      eq(credential.currentVersionId, credentialVersion.id),
+    )
+    .where(
+      and(
+        eq(credential.id, input.credentialId),
+        eq(collection.workspaceId, input.workspaceId),
+      ),
+    )
+    .limit(1);
+
+  if (!storedCredential) {
+    throw new AuthorizationError(403, "Credential access denied.");
+  }
+
+  const value = await decryptCredential(
+    storedCredential.id,
+    storedCredential.encryptedValue,
+    storedCredential.nonce,
+    storedCredential.encryptionKeyVersion,
+  );
+
+  await db.insert(auditEvent).values({
+    id: crypto.randomUUID(),
+    workspaceId: input.workspaceId,
+    actorUserId: session.user.id,
+    action: "credential.revealed",
+    resourceType: "credential",
+    resourceId: storedCredential.id,
+    environmentId: storedCredential.environmentId,
+    metadata: metadataForCredential({
+      name: storedCredential.name,
+      type: storedCredential.type,
+      provider: storedCredential.provider,
+      exportName: storedCredential.exportName,
+    }),
+  });
+
+  return {
+    id: storedCredential.id,
+    value,
   };
 }
 
