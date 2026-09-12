@@ -36,6 +36,13 @@ import {
   MenuTrigger,
 } from "@/components/ui/menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { authClient } from "@/lib/auth-client";
 
@@ -85,6 +92,19 @@ const TYPE_LABELS: Record<string, string> = {
   password: "Password",
   generic_secret: "Secret",
 };
+
+type CredentialTypeOption = {
+  label: string;
+  value: string;
+};
+
+const CREDENTIAL_TYPES: CredentialTypeOption[] = [
+  { label: "API key", value: "api_key" },
+  { label: "ENV variable", value: "environment_variable" },
+  { label: "Access token", value: "access_token" },
+  { label: "Password", value: "password" },
+  { label: "Secret", value: "generic_secret" },
+];
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -372,19 +392,27 @@ export default function CredentialsDashboard({
                 </Field>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field>
-                    <FieldLabel htmlFor="credential-type">Type</FieldLabel>
-                    <select
-                      id="credential-type"
-                      className="h-8.5 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-7.5"
-                      value={form.type}
-                      onChange={(event) => updateForm("type", event.target.value)}
+                    <FieldLabel>Type</FieldLabel>
+                    <Select
+                      items={CREDENTIAL_TYPES}
+                      value={CREDENTIAL_TYPES.find(
+                        (item) => item.value === form.type,
+                      )}
+                      onValueChange={(value) => {
+                        if (value) updateForm("type", value.value);
+                      }}
                     >
-                      <option value="api_key">API key</option>
-                      <option value="environment_variable">ENV variable</option>
-                      <option value="access_token">Access token</option>
-                      <option value="password">Password</option>
-                      <option value="generic_secret">Secret</option>
-                    </select>
+                      <SelectTrigger aria-label="Credential type">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectPopup>
+                        {CREDENTIAL_TYPES.map((item) => (
+                          <SelectItem key={item.value} value={item}>
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
                   </Field>
                   <Field>
                     <FieldLabel htmlFor="credential-provider">Provider</FieldLabel>
